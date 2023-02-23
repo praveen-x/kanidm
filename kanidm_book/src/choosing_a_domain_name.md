@@ -1,6 +1,6 @@
 # Choosing a Domain Name
 
-Through out this book, Kanidm will make reference to a "domain name". This is your chosen DNS domain
+Throughout this book, Kanidm will make reference to a "domain name". This is your chosen DNS domain
 name that you intend to use for Kanidm. Choosing this domain name however is not simple as there are
 a number of considerations you need to be careful of.
 
