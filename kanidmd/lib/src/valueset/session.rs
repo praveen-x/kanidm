@@ -35,12 +35,87 @@ impl ValueSetSession {
             .into_iter()
             .filter_map(|dbv| {
                 match dbv {
+                    // MISTAKE - Skip due to lack of credential id
+                    // Don't actually skip, generate a random cred id. Session cleanup will
+                    // trim sessions on users, but if we skip blazenly we invalidate every api
+                    // token ever issued. OPPS!
                     DbValueSession::V1 {
                         refer,
                         label,
                         expiry,
                         issued_at,
                         issued_by,
+                        scope,
+                    } => {
+                        let cred_id = Uuid::new_v4();
+
+                        // Convert things.
+                        let issued_at = OffsetDateTime::parse(issued_at, time::Format::Rfc3339)
+                            .map(|odt| odt.to_offset(time::UtcOffset::UTC))
+                            .map_err(|e| {
+                                admin_error!(
+                                    ?e,
+                                    "Invalidating session {} due to invalid issued_at timestamp",
+                                    refer
+                                )
+                            })
+                            .ok()?;
+
+                        // This is a bit annoying. In the case we can't parse the optional
+                        // expiry, we need to NOT return the session so that it's immediately
+                        // invalidated. To do this we have to invert some of the options involved
+                        // here.
+                        let expiry = expiry
+                            .map(|e_inner| {
+                                OffsetDateTime::parse(e_inner, time::Format::Rfc3339)
+                                    .map(|odt| odt.to_offset(time::UtcOffset::UTC))
+                                // We now have an
+                                // Option<Result<ODT, _>>
+                            })
+                            .transpose()
+                            // Result<Option<ODT>, _>
+                            .map_err(|e| {
+                                admin_error!(
+                                    ?e,
+                                    "Invalidating session {} due to invalid expiry timestamp",
+                                    refer
+                                )
+                            })
+                            // Option<Option<ODT>>
+                            .ok()?;
+
+                        let issued_by = match issued_by {
+                            DbValueIdentityId::V1Internal => IdentityId::Internal,
+                            DbValueIdentityId::V1Uuid(u) => IdentityId::User(u),
+                            DbValueIdentityId::V1Sync(u) => IdentityId::Synch(u),
+                        };
+
+                        let scope = match scope {
+                            DbValueAccessScopeV1::IdentityOnly => AccessScope::IdentityOnly,
+                            DbValueAccessScopeV1::ReadOnly => AccessScope::ReadOnly,
+                            DbValueAccessScopeV1::ReadWrite => AccessScope::ReadWrite,
+                            DbValueAccessScopeV1::Synchronise => AccessScope::Synchronise,
+                        };
+
+                        Some((
+                            refer,
+                            Session {
+                                label,
+                                expiry,
+                                issued_at,
+                                issued_by,
+                                cred_id,
+                                scope,
+                            },
+                        ))
+                    }
+                    DbValueSession::V2 {
+                        refer,
+                        label,
+                        expiry,
+                        issued_at,
+                        issued_by,
+                        cred_id,
                         scope,
                     } => {
                         // Convert things.
@@ -98,6 +173,7 @@ impl ValueSetSession {
                                 expiry,
                                 issued_at,
                                 issued_by,
+                                cred_id,
                                 scope,
                             },
                         ))
@@ -118,6 +194,7 @@ impl ValueSetSession {
                      expiry,
                      issued_at,
                      issued_by,
+                     cred_id,
                      scope,
                  }| {
                     // Convert things.
@@ -176,6 +253,7 @@ impl ValueSetSession {
                             expiry,
                             issued_at,
                             issued_by,
+                            cred_id: *cred_id,
                             scope,
                         },
                     ))
@@ -269,7 +347,7 @@ impl ValueSetT for ValueSetSession {
         DbValueSetV2::Session(
             self.map
                 .iter()
-                .map(|(u, m)| DbValueSession::V1 {
+                .map(|(u, m)| DbValueSession::V2 {
                     refer: *u,
                     label: m.label.clone(),
                     expiry: m.expiry.map(|odt| {
@@ -285,6 +363,7 @@ impl ValueSetT for ValueSetSession {
                         IdentityId::User(u) => DbValueIdentityId::V1Uuid(u),
                         IdentityId::Synch(u) => DbValueIdentityId::V1Sync(u),
                     },
+                    cred_id: m.cred_id,
                     scope: match m.scope {
                         AccessScope::IdentityOnly => DbValueAccessScopeV1::IdentityOnly,
                         AccessScope::ReadOnly => DbValueAccessScopeV1::ReadOnly,
@@ -317,6 +396,7 @@ impl ValueSetT for ValueSetSession {
                         IdentityId::User(u) => ReplIdentityIdV1::Uuid(u),
                         IdentityId::Synch(u) => ReplIdentityIdV1::Synch(u),
                     },
+                    cred_id: m.cred_id,
                     scope: match m.scope {
                         AccessScope::IdentityOnly => ReplAccessScopeV1::IdentityOnly,
                         AccessScope::ReadOnly => ReplAccessScopeV1::ReadOnly,
